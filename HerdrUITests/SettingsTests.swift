@@ -24,6 +24,8 @@ final class SettingsTests: XCTestCase {
         }
         // Check process state before queries/activate can relaunch a crashed app.
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
+        XCTAssertLessThan(window.frame.width, 600, "The regression must exercise compact Settings")
+        let compactWidth = window.frame.width
         app.buttons["Settings"].firstMatch.tap()
         let machines = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Machines")).firstMatch
         XCTAssertTrue(machines.waitForExistence(timeout: 5))
@@ -47,7 +49,10 @@ final class SettingsTests: XCTestCase {
                 .withOffset(CGVector(dx: max(initialSize.width, 800) - 50,
                                      dy: max(initialSize.height, 700) - 50)))
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
-        XCTAssertTrue(app.buttons["Settings"].firstMatch.isHittable)
+        XCTAssertGreaterThan(window.frame.width, compactWidth + 100, "The regression must expand the window")
+        let settings = app.buttons["Settings"].firstMatch
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        XCTAssertTrue(settings.isHittable)
         XCTAssertTrue(machines.waitForExistence(timeout: 5))
         XCTAssertTrue(machines.isHittable)
     }

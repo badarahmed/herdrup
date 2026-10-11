@@ -112,11 +112,11 @@ jobs:
 
   build-and-uitest:
     runs-on: macos-latest
-    # The per-suite first-run caps sum to 160 min (font 10, iPhone 70, iPad resize 25, iPad
-    # controls 15, SwiftTerm build 10 + 2 x 15) before checkout, setup and the build. The job
+    # The per-suite first-run caps sum to 180 min (font 10, iPhone 70, iPad resize 25,
+    # controls 15, Settings 20, SwiftTerm build 10 + 2 x 15) before setup and the build.
     # limit must sit above that, or a slow run is killed before later suites run and receipts
     # upload.
-    timeout-minutes: 180
+    timeout-minutes: 200
     steps:
       - uses: actions/checkout@v4
 
@@ -355,16 +355,24 @@ jobs:
         if: ${{ !cancelled() && steps.simulators.outcome == 'success' && github.event.inputs.only_suite == '' }}
         run: |
           set -o pipefail
+          TIMEOUT_BIN=$(command -v timeout || command -v gtimeout || true)
+          if [ -z "$TIMEOUT_BIN" ]; then
+            echo "::error::no timeout binary; Settings budget would be unenforceable"
+            exit 1
+          fi
           xcrun simctl bootstatus "$IPAD_UDID" -b
           xcrun simctl uninstall "$IPAD_UDID" com.jerryfane.herdr
           xcrun simctl uninstall "$IPAD_UDID" com.jerryfane.herdr.uitests.xctrunner
-          xcodebuild test \
+          "$TIMEOUT_BIN" --signal=INT 20m xcodebuild test \
             -project Herdr.xcodeproj -scheme Herdr -configuration Distribution \
             -destination "platform=iOS Simulator,id=${IPAD_UDID}" \
             -derivedDataPath .build-dd-settings-stack \
             -clonedSourcePackagesDirPath SourcePackages \
             -resultBundlePath TestReceipts/settings-device-stack.xcresult \
             -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 300 \
+            -maximum-test-execution-time-allowance 600 \
             -only-testing:HerdrUITests/SettingsTests/testCompactSettingsSurviveResizeAndResume \
             ENABLE_TESTABILITY=YES 'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) DEBUG' \
             CODE_SIGNING_ALLOWED=NO 2>&1 | tee TestReceipts/settings-device-stack.log | xcbeautify
