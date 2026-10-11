@@ -113,11 +113,11 @@ jobs:
   # THE DEVICE SUITE, AS PARALLEL SIMULATOR JOBS. It used to be one serial job: the
   # iPhone suite (~45 min of tests), then the iPad rounds (~25 min) waiting behind it,
   # ~90 min per green run and 2-3 h whenever a failure triggered a whole-suite rerun.
-  # Each shard now builds for itself (~3.5 min, cheaper than shipping DerivedData
-  # between jobs) and boots its simulator during that build. Tools/ci/ui-shard.sh
-  # defines what each shard runs and checks that the two iPhone shards split
-  # HerdrUITests exactly. Three macOS jobs stay under the account's limit of five
-  # concurrent macOS jobs, which other repositories share.
+  # Each shard builds for itself, which is cheaper than shipping DerivedData between
+  # jobs. Booting the simulator during the build was measured to slow both on the
+  # 3-CPU runner (build 11-14 min against 3 min), so the boot waits for the build.
+  # Tools/ci/ui-shard.sh defines what each shard runs. Three macOS jobs stay under
+  # the account's limit of five concurrent macOS jobs, which other repos share.
   uitest:
     name: ui (${{ matrix.shard }})
     runs-on: macos-latest
@@ -203,16 +203,6 @@ jobs:
                   output.write(f"{key}={device['udid']}\n")
                   print(f"{runtime}: {key}={device['udid']} ({device['name']})")
           PY
-
-      - name: Start booting the shard's simulator
-        # The first boot of a fresh runner spends minutes in data migration. Starting
-        # it now overlaps that with the build instead of the test deadline.
-        run: |
-          udid="$IPHONE_UDID"
-          if [ "$SHARD" = ipad ] || { [ "$SHARD" = focused ] && [ "$ONLY_DEVICE" = ipad ]; }; then
-            udid="$IPAD_UDID"
-          fi
-          xcrun simctl boot "$udid" || true
 
       - name: Build app and tests for simulator (SwiftTerm 1.15.0 + Metal)
         run: |
