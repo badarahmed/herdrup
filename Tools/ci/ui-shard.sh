@@ -64,7 +64,7 @@ run_suite() {
   local label="$1" udid="$2" budget="$3"
   shift 3
   local status=0
-  # Boot outside the test deadline; the workflow started the boot before the build.
+  # Boot outside the test deadline. Booting during the build was measured to slow both.
   xcrun simctl boot "$udid" 2>/dev/null || true
   xcrun simctl bootstatus "$udid" -b >/dev/null || return 1
   # A WALL-CLOCK BOUND PER INVOCATION, so one wedged case cannot eat the job budget
@@ -93,8 +93,10 @@ run_suite() {
     return 1
   fi
   echo "$failed" | tee "TestReceipts/$label-diagnostic-selection.txt"
+  # Diagnostics only: the failed tests usually rerun in 1-3 min. A short cap keeps a
+  # pathological rerun from eating the job budget that the receipt upload needs.
   # shellcheck disable=SC2086 # one -only-testing argument per line
-  "$TIMEOUT_BIN" --signal=INT "$budget" xcodebuild test-without-building "${PROJECT[@]}" \
+  "$TIMEOUT_BIN" --signal=INT 10m xcodebuild test-without-building "${PROJECT[@]}" \
       -destination "platform=iOS Simulator,id=$udid" \
       -parallel-testing-enabled NO \
       -test-timeouts-enabled YES \
