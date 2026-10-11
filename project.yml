@@ -270,6 +270,9 @@ targets:
         Release:
           APS_ENVIRONMENT: production
         Distribution:
+          # Match a physical iPad's usable main stack in optimized simulator checks.
+          # Device archives do not match this SDK condition and keep the OS default.
+          "OTHER_LDFLAGS[sdk=iphonesimulator*]": "$(inherited) -Wl,-stack_size,0xfc000"
           APS_ENVIRONMENT: production
           CODE_SIGN_STYLE: Manual
           PROVISIONING_PROFILE_SPECIFIER: "Herdrup App Store"

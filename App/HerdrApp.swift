@@ -7009,6 +7009,18 @@ private struct DetailSwipeBack: View {
     }
 }
 
+/// Store a builder, not the large Settings tuple, in the navigation tree.
+/// SwiftUI evaluates this body separately when a resize mounts the compact index.
+private struct SettingsIndexContent<Content: View>: View {
+    private let content: () -> Content
+
+    init(@ViewBuilder content: @escaping () -> Content) {
+        self.content = content
+    }
+
+    var body: some View { content() }
+}
+
 struct SettingsView: View {
     let client: HerdrClient
     /// Live agents, mirrored in from the home view exactly like GramView's — the
@@ -7288,24 +7300,26 @@ struct SettingsView: View {
                     header
                     Divider().overlay(Palette.hairlineQuiet)
                     ScrollView {
-                        // Grouped subviews keep this builder under SwiftUI's 10-child
-                        // ViewBuilder ceiling (8 children + the footers Group = 9, so
-                        // one slot left: the next section needs its own Group).
-                        VStack(alignment: .leading, spacing: 0) {
-                            atAGlanceSection
-                            manageSection
-                            appearanceSection
-                            previewsSection
-                            troubleSection
-                            helpSection
-                            supportSection
-                            aboutSection
-                            Group {
-                                versionFooter
-                                githubFooter
+                        SettingsIndexContent {
+                            // Grouped subviews keep this builder under SwiftUI's 10-child
+                            // ViewBuilder ceiling (8 children + the footers Group = 9, so
+                            // one slot left: the next section needs its own Group).
+                            VStack(alignment: .leading, spacing: 0) {
+                                atAGlanceSection
+                                manageSection
+                                appearanceSection
+                                previewsSection
+                                troubleSection
+                                helpSection
+                                supportSection
+                                aboutSection
+                                Group {
+                                    versionFooter
+                                    githubFooter
+                                }
                             }
+                            .padding(.bottom, 16)
                         }
-                        .padding(.bottom, 16)
                     }
                 }
             }

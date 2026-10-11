@@ -351,6 +351,35 @@ jobs:
           run_suite iPadAgentListChrome "$IPAD_UDID" 5m -only-testing:HerdrUITests/AgentListChromeTests || failed=1
           exit "$failed"
 
+      - name: Run optimized Settings with the device stack budget
+        if: ${{ !cancelled() && steps.simulators.outcome == 'success' && github.event.inputs.only_suite == '' }}
+        run: |
+          set -o pipefail
+          xcrun simctl bootstatus "$IPAD_UDID" -b
+          xcrun simctl uninstall "$IPAD_UDID" com.jerryfane.herdr
+          xcrun simctl uninstall "$IPAD_UDID" com.jerryfane.herdr.uitests.xctrunner
+          xcodebuild test \
+            -project Herdr.xcodeproj -scheme Herdr -configuration Distribution \
+            -destination "platform=iOS Simulator,id=${IPAD_UDID}" \
+            -derivedDataPath .build-dd-settings-stack \
+            -clonedSourcePackagesDirPath SourcePackages \
+            -resultBundlePath TestReceipts/settings-device-stack.xcresult \
+            -parallel-testing-enabled NO \
+            -only-testing:HerdrUITests/SettingsTests/testCompactSettingsSurviveResizeAndResume \
+            ENABLE_TESTABILITY=YES 'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) DEBUG' \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee TestReceipts/settings-device-stack.log | xcbeautify
+          # XCTest activation can restart a crashed app and still report a pass.
+          xcrun xcresulttool export attachments \
+            --path TestReceipts/settings-device-stack.xcresult \
+            --output-path TestReceipts/settings-device-stack-crash-check
+          python3 - <<'PY'
+          from pathlib import Path
+          crashes = list(Path("TestReceipts/settings-device-stack-crash-check").rglob("*.ips"))
+          if crashes:
+              raise SystemExit("Crashes attached to the Settings regression: " + ", ".join(p.name for p in crashes))
+          print("Settings device-stack regression: no crash reports attached")
+          PY
+
       - name: Run UIKit SwiftTerm API regressions on both devices
         # Still collect API evidence when an interaction assertion failed.
         if: ${{ !cancelled() && steps.simulators.outcome == 'success' && github.event.inputs.only_suite == '' }}

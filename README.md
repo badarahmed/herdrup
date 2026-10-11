@@ -163,6 +163,9 @@ On Mac, Back sits on the left, below the separate system window-title row; other
 on the right. Pushed Settings pages follow the same platform-specific Back placement.
 The leading control is declared before the title, matching the visual reading order.
 iPhone keeps its large titles. The sidebar rail and ⌘K remain available.
+Settings builds its compact index in a separate view body, keeping the large section tuple
+off the adaptive navigation stack. CI checks resize/resume in an optimized simulator build
+with a device-sized 1008 KiB main stack, and rejects attached crashes even if XCTest reports a pass.
 
 ## License
 
