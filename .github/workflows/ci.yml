@@ -112,11 +112,10 @@ jobs:
 
   build-and-uitest:
     runs-on: macos-latest
-    # The per-suite first-run caps sum to 180 min (font 10, iPhone 70, iPad resize 25,
-    # controls 15, Settings 20, SwiftTerm build 10 + 2 x 15) before setup and the build.
-    # limit must sit above that, or a slow run is killed before later suites run and receipts
-    # upload.
-    timeout-minutes: 200
+    # First-run caps total 210 min: font 10, iPhone 70, iPad resize 25, controls 15,
+    # select-agent 5, agent chrome 5, optimized Settings build/test 40,
+    # SwiftTerm build 10 + 2 x 15. Keep 20 min for setup and receipt upload.
+    timeout-minutes: 230
     steps:
       - uses: actions/checkout@v4
 
@@ -363,7 +362,7 @@ jobs:
           xcrun simctl bootstatus "$IPAD_UDID" -b
           xcrun simctl uninstall "$IPAD_UDID" com.jerryfane.herdr
           xcrun simctl uninstall "$IPAD_UDID" com.jerryfane.herdr.uitests.xctrunner
-          "$TIMEOUT_BIN" --signal=INT 20m xcodebuild test \
+          "$TIMEOUT_BIN" --signal=INT 40m xcodebuild test \
             -project Herdr.xcodeproj -scheme Herdr -configuration Distribution \
             -destination "platform=iOS Simulator,id=${IPAD_UDID}" \
             -derivedDataPath .build-dd-settings-stack \
