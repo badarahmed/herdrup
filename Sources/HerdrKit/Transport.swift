@@ -109,7 +109,7 @@ public protocol SessionListingTransport: HerdrTransport {
     func roundTrip(_ requestLine: String, inSession session: String?) async throws -> String
 }
 
-public enum TransportError: Error, CustomStringConvertible {
+public enum TransportError: Error, CustomStringConvertible, LocalizedError {
     case socketCreationFailed(errno: Int32)
     case connectFailed(path: String, errno: Int32)
     case pathTooLong(String)
@@ -168,6 +168,8 @@ public enum TransportError: Error, CustomStringConvertible {
     /// this way: a dead link ends its exec channel, while a held channel can go silent.
     case requestTimedOut(host: String)
 
+    public var errorDescription: String? { description }
+
     public var description: String {
         switch self {
         case .socketCreationFailed(let e): return "socket() failed (errno \(e))"
@@ -180,13 +182,15 @@ public enum TransportError: Error, CustomStringConvertible {
         case .hostKeyRejected(let h, let fp):
             return "host key for \(h) rejected: \(fp) does not match the pinned key"
         case .bridgeFailed(let stderr):
-            return "api-bridge produced no reply; stderr: \(stderr)"
+            return stderr.isEmpty
+                ? "Herdr command ended without a response. Check that Herdr is installed and its daemon is running."
+                : "Herdr command failed: \(stderr)"
         case .machineCommandFailed(let stderr):
             return "machine command failed: \(stderr)"
         case .herdrNotInstalled(let h):
             return "herdr is not installed on \(h)"
         case .herdrIncompatible(let h):
-            return "the herdr on \(h) is too old or isn't the fork. Update it (or install the fork) and reconnect"
+            return "Herdr on \(h) does not support this client's required bridge. Update Herdr and reconnect."
         case .remoteShellFailed(let h, let stderr):
             return "the shell on \(h) could not start herdr (exit 127); stderr: \(stderr)"
         case .daemonUnavailable(let h):

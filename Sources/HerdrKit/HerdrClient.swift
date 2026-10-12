@@ -6,6 +6,15 @@ import Foundation
 /// single-shot (see `HerdrTransport`). Only `subscribe` holds a connection open.
 public actor HerdrClient {
     private let transport: HerdrTransport
+
+    /// Opens a stock rendered terminal over the transport's owned SSH exec channel.
+    public func openUpstreamTerminal(pane: String, cols: Int, rows: Int, observe: Bool = false) async throws -> UpstreamTerminalSession {
+        guard let upstream = transport as? any UpstreamTerminalTransport else {
+            throw UpstreamProtocolError.invalidMessage
+        }
+        return try await upstream.openTerminal(target: pane, cols: cols, rows: rows, observe: observe)
+    }
+
     private let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         // Do NOT escape "/" as "\/". A base64 gram file chunk is slash-heavy (an

@@ -3,35 +3,7 @@ import Citadel
 import Crypto
 import NIOCore
 
-/// The pure-Swift transport: swift-nio-ssh + Citadel, replacing libssh2.
-///
-/// Where `SSHTransport` needed a bounded thread pool, a cancellation handle that
-/// publishes the socket, and `DescriptorAudit` — all because libssh2 blocks and
-/// owns raw fds — this needs none of it. Citadel is async/await-native:
-/// cancellation is `channel.close()` on an event loop, and there are no fds to
-/// audit. That deletion is the whole point of route B.
-///
-/// It reaches herdr's JSON API not by forwarding a unix socket (libssh2's
-/// `direct-streamlocal`, which nio-ssh does not implement) but by exec'ing the
-/// `herdr api-bridge` subcommand over SSH channels and reading its stdout. Two
-/// ways, chosen per herdr session (#390):
-///
-/// - On a herdr that advertises `api_bridge_multi`, one held channel runs
-///   `herdr api-bridge --multi` and carries every one-off request as a line
-///   (`RequestChannel`, `RequestChannelPool`), so a request costs neither a channel
-///   open nor a herdr process start.
-/// - Otherwise — and for anything the channel cannot carry, or whenever it is
-///   unavailable — the per-request path: one channel per call, the request riding as
-///   a base64 argument (Citadel's `executeCommandStream` does not write the channel
-///   stdin, and base64 keeps arbitrary JSON off the remote shell's quoting rules).
-///
-/// One `SSHClient` is held and reused across calls (no per-request handshake —
-/// closing issue #25). Conforms to the two-method `HerdrTransport` seam;
-/// `SessionRecovery`/`RecoveryExecutor` sit above it unchanged.
-/// Lets exactly one racer resume a continuation. Resuming a continuation twice is
-/// undefined behaviour rather than a catchable error, so the guard has to be
-/// atomic — a plain Bool read-then-write is a race in exactly the interleaving
-/// this exists to prevent.
+/// Guards continuation races in the SSH connection timeout path.
 final class FirstPastThePost: @unchecked Sendable {
     private let lock = NSLock()
     private var claimed = false
@@ -44,7 +16,13 @@ final class FirstPastThePost: @unchecked Sendable {
     }
 }
 
-public actor CitadelTransport: HerdrTransport, MachineFederationTransport, SessionListingTransport {
+public enum HerdrBridgeMode: Sendable { case upstream, fork }
+
+/// SSH transport for stock Herdr. One JSON request is written to stdin of
+/// `remote-api-bridge`; subscriptions retain their own duplex exec channel.
+/// Legacy fork bridges are available only through explicit `.fork` mode.
+public actor CitadelTransport: HerdrTransport, MachineFederationTransport, SessionListingTransport, UpstreamTerminalTransport {
+    private nonisolated let bridgeMode: HerdrBridgeMode
     private let credentials: SSHCredentials
     /// The SSH connection one-off requests share. Siblings made with
     /// `forSession(_:)` hold the SAME core, so switching herdr sessions reuses the
@@ -68,12 +46,13 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
     public init(
         credentials: SSHCredentials,
         hostKeyValidator: SSHHostKeyValidator,
+        bridgeMode: HerdrBridgeMode = .upstream,
         connectTimeoutNanoseconds: UInt64 = CitadelTransport.defaultConnectTimeoutNanoseconds
     ) {
         let connection = SSHConnectionCore(
             credentials: credentials, hostKeyValidator: hostKeyValidator,
             connectTimeoutNanoseconds: connectTimeoutNanoseconds)
-        self.init(credentials: credentials, connection: connection, backend: .ssh(connection))
+        self.init(credentials: credentials, connection: connection, backend: .ssh(connection), bridgeMode: bridgeMode)
     }
 
     /// The designated initializer. `backend` replaces the SSH exec plumbing and
@@ -82,9 +61,11 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
         credentials: SSHCredentials,
         connection: SSHConnectionCore,
         backend: ExecBackend,
+        bridgeMode: HerdrBridgeMode = .fork,
         requestChannelSettings: RequestChannelSettings = RequestChannelSettings()
     ) {
         self.credentials = credentials
+        self.bridgeMode = bridgeMode
         self.connection = connection
         self.backend = backend
         let host = credentials.host
@@ -104,6 +85,7 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
         self.credentials = credentials
         self.connection = sibling.connection
         self.backend = sibling.backend
+        self.bridgeMode = sibling.bridgeMode
         self.requestChannels = sibling.requestChannels
     }
 
@@ -136,12 +118,14 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
     public init(
         credentials: SSHCredentials,
         hostKeyPolicy: HostKeyPolicy = PinningHostKeyPolicy(),
+        bridgeMode: HerdrBridgeMode = .upstream,
         connectTimeoutNanoseconds: UInt64 = CitadelTransport.defaultConnectTimeoutNanoseconds
     ) {
         self.init(
             credentials: credentials,
             hostKeyValidator: .custom(PinningHostKeyValidator(
                 host: credentials.host, port: credentials.port, policy: hostKeyPolicy)),
+            bridgeMode: bridgeMode,
             connectTimeoutNanoseconds: connectTimeoutNanoseconds)
     }
 
@@ -312,7 +296,13 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
     /// failures, which must retain their actual diagnostic.
     static func classifyBridgeFailure(stderr: String, exitCode: Int, host: String) -> TransportError {
         if stderr.contains(herdrNotInstalledSentinel) { return .herdrNotInstalled(host: host) }
+        if stderr.contains("failed to connect to remote Herdr API socket"),
+           stderr.contains("No such file or directory") || stderr.contains("Connection refused") {
+            return .daemonUnavailable(host: host)
+        }
         if exitCode == 2 && [
+            "unrecognized subcommand 'remote-api-bridge'",
+            "unknown subcommand 'remote-api-bridge'",
             "unrecognized subcommand 'api-bridge'",
             "unknown subcommand 'api-bridge'",
             "invalid subcommand 'api-bridge'",
@@ -339,7 +329,7 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
               envelope.error.code == "transport_error"
         else { return nil }
         let message = envelope.error.message
-        guard message.hasPrefix("api-bridge: "),
+        guard (message.hasPrefix("api-bridge: ") || message.hasPrefix("remote-api-bridge: ")),
               message.contains("No such file or directory (os error 2)")
                 || message.contains("Connection refused (os error 111)")
                 || message.contains("Connection refused (os error 61)")
@@ -386,6 +376,7 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
     }
 
     public func roundTrip(_ requestLine: String, inSession session: String?) async throws -> String {
+        if bridgeMode == .upstream { return try await upstreamRoundTrip(requestLine, session: session) }
         if let reply = try await requestChannels.send(requestLine, session: session) { return reply }
         return try await Self.perRequestRoundTrip(
             requestLine, session: session, host: credentials.host, backend: backend)
@@ -409,6 +400,11 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
         _ requestLine: String, onBytesReceived: ((Int) -> Void)?
     ) async throws -> String {
         guard let onBytesReceived else { return try await roundTrip(requestLine) }
+        if bridgeMode == .upstream {
+            let reply = try await upstreamRoundTrip(requestLine, session: credentials.session)
+            onBytesReceived(reply.utf8.count)
+            return reply
+        }
         return try await Self.perRequestRoundTrip(
             requestLine, session: credentials.session, host: credentials.host, backend: backend,
             onBytesReceived: onBytesReceived)
@@ -544,7 +540,8 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
     }
 
     public nonisolated func stream(_ requestLine: String) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
+        if bridgeMode == .upstream { return upstreamStream(requestLine) }
+        return AsyncThrowingStream { continuation in
             // A subscription gets its OWN connection, NOT the shared command
             // client. Citadel's public `executeCommandStream` exposes only the
             // output stream and never closes its child channel (only the internal
@@ -636,6 +633,61 @@ public actor CitadelTransport: HerdrTransport, MachineFederationTransport, Sessi
     public func close() async {
         await requestChannels.close()
         await connection.close()
+    }
+
+    private func upstreamRoundTrip(_ request: String, session: String?) async throws -> String {
+        let channel = UpstreamJSONChannel(host: credentials.host)
+        let link = try await backend.openLink(Self.herdrCommand(["remote-api-bridge"], session: session))
+        try await channel.start(link: link, request: request)
+        do {
+            var iterator = channel.lines.makeAsyncIterator()
+            guard let line = try await iterator.next() else { throw TransportError.closedBeforeResponse }
+            if let failure = Self.daemonSocketFailure(in: line, host: credentials.host) { throw failure }
+            guard RequestChannel.responseID(line) == RequestChannel.responseID(request) else {
+                throw UpstreamProtocolError.invalidMessage
+            }
+            await channel.stop()
+            return line
+        } catch { await channel.stop(); throw error }
+    }
+
+    private nonisolated func upstreamStream(_ request: String) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                let channel = UpstreamJSONChannel(host: credentials.host)
+                do {
+                    let link = try await backend.openLink(Self.herdrCommand(["remote-api-bridge"], session: credentials.session))
+                    try await channel.start(link: link, request: request)
+                    for try await line in channel.lines { continuation.yield(line) }
+                    continuation.finish()
+                } catch { continuation.finish(throwing: error) }
+                await channel.stop()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    public func openTerminal(target: String, cols: Int, rows: Int, observe: Bool = false) async throws -> UpstreamTerminalSession {
+        try UpstreamTerminalSession.validateSize(cols: cols, rows: rows)
+        guard !target.isEmpty, target.utf8.count <= 256,
+              target.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 46, 58, 95].contains($0) })
+        else { throw UpstreamProtocolError.invalidTarget }
+        let command = Self.terminalSessionCommand(target: target, cols: cols, rows: rows, observe: observe, session: credentials.session)
+        let channel = UpstreamJSONChannel(host: credentials.host)
+        try await channel.start(link: try await backend.openLink(command))
+        let terminal = UpstreamTerminalSession(channel: channel, observe: observe)
+        await terminal.start()
+        return terminal
+    }
+
+    /// Stock's parser requires the target before its options. Validation above
+    /// restricts it to ASCII shell literals; no user shell syntax reaches this script.
+    static func terminalSessionCommand(target: String, cols: Int, rows: Int, observe: Bool, session: String?) -> String {
+        var script = herdrResolution + #"exec "$HERDR""#
+        if let name = flagSession(session) { script += " --session " + name }
+        script += " terminal session " + (observe ? "observe" : "control")
+        script += " " + target + " --cols " + String(cols) + " --rows " + String(rows)
+        return "/bin/sh -c '" + script + "'"
     }
 
     /// Test-only window into the request channels.

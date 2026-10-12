@@ -78,7 +78,7 @@ struct HostEditor: View {
     /// left blank (whichever auth kind).
     private var canSave: Bool {
         guard endpoint != nil, !trimmedUser.isEmpty else { return false }
-        if editing != nil { return true }
+        if let editing, authKind == editing.auth { return true }
         return authKind == .key ? !trimmedKey.isEmpty : !password.isEmpty
     }
 
@@ -106,11 +106,14 @@ struct HostEditor: View {
 
                         if editing == nil {
                             primaryButton("Save & Connect") { saveAndConnect() }
+                                .accessibilityIdentifier("host-save-connect")
                             Button("Save without connecting") { if save() { dismiss() } }
+                                .accessibilityIdentifier("host-save-only")
                                 .font(Typography.app(14)).foregroundStyle(Palette.textDim)
                                 .disabled(!canSave).padding(.top, 2)
                         } else {
                             primaryButton("Save") { if save() { dismiss() } }
+                                .accessibilityIdentifier("host-save")
                         }
                     }
                     .padding(20)
@@ -132,6 +135,7 @@ struct HostEditor: View {
     /// Persist the host (add or update). Returns success; sets `error` on failure.
     @discardableResult
     private func save() -> Bool {
+        guard canSave else { return false }
         let secret = currentSecret()
         let ok: Bool
         if let editing {
@@ -142,7 +146,9 @@ struct HostEditor: View {
         } else {
             ok = false  // add needs a secret; canSave already prevents this — defensive.
         }
-        if !ok { error = "Couldn't save this host. Check the fields (a key or password is required) and try again." }
+        if !ok {
+            error = "Couldn't store this host's credential in the device Keychain. Unlock the device and try again."
+        }
         return ok
     }
 
@@ -168,6 +174,7 @@ struct HostEditor: View {
         HStack {
             Text(label).font(Typography.app(15)).foregroundStyle(Palette.textDim)
             TextField(placeholder, text: text)
+                .accessibilityIdentifier("host-\(label.lowercased())")
                 .multilineTextAlignment(.trailing)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 .font(Typography.machine(15)).foregroundStyle(Palette.text)
@@ -183,6 +190,7 @@ struct HostEditor: View {
             Text("Password").tag(SavedAuthKind.password)
         }
         .pickerStyle(.segmented)
+        .accessibilityIdentifier("host-auth")
         .padding(.vertical, 2)
     }
 
@@ -193,6 +201,7 @@ struct HostEditor: View {
         HStack {
             Text("Password").font(Typography.app(15)).foregroundStyle(Palette.textDim)
             SecureField(editing == nil ? "password" : "saved · type to replace", text: $password)
+                .accessibilityIdentifier("host-password")
                 .multilineTextAlignment(.trailing)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 .font(Typography.machine(15)).foregroundStyle(Palette.text)

@@ -1,383 +1,93 @@
-# XcodeGen spec for the herdr iOS app.
-#
-# The buildbox runs `xcodegen generate` before `xcodebuild`, so the Xcode project
-# is DERIVED FROM THIS FILE and never committed. That is deliberate: an
-# .xcodeproj is an opaque blob that cannot be reviewed, diffed, or authored from
-# a machine without Xcode — and this app is written on Linux.
-#
-# Toolchain facts taken from the buildbox's own log (518340e.log), not assumed:
-#   simulator   iPhone 17 Pro
-#   SDK         iPhoneSimulator26.2
-#   target      arm64-apple-ios17.0-simulator
-#   bundle ids  com.jerryfane.<name>
+# Core iPad client for stock upstream Herder. Generated with XcodeGen.
+---
 name: Herdr
-
 options:
-  bundleIdPrefix: com.jerryfane
+  bundleIdPrefix: com.badarahmed
   deploymentTarget:
-    iOS: "17.0"
+    iOS: '17.0'
   createIntermediateGroups: true
-
-# Debug + Release are the defaults (buildbox builds Debug-iphonesimulator; the Mac
-# lane scripts/testflight.sh archives Release with AUTOMATIC account signing).
-# Distribution is a release-type config used ONLY by the GitHub Actions CI archive,
-# which needs MANUAL signing — isolated here so the CI's manual profile does not
-# regress the Mac lane's automatic Release signing.
 configs:
   Debug: debug
   Release: release
-  Distribution: release
-
 packages:
-  # The local package, consumed unchanged. HerdrKit contains no UIKit or SwiftUI
-  # so it keeps building and testing on Linux; the app depends on it, never the
-  # reverse. If this link ever inverts, the Linux test suite silently stops
-  # covering the layer the app runs on.
   HerdrKit:
-    path: .
-  # The VT emulator that renders the live terminal (#40). Added to the APP target
-  # ONLY — never to Package.swift/HerdrKit, which must stay UIKit-free and
-  # Linux-buildable (SwiftTerm is UIKit/AppKit). We use SwiftTerm's default
-  # CoreText renderer, NOT its Metal backend.
-  #
-  # v1.15.0 (was 1.11.2): 1.11.2's iOS `updateScroller()` force-pinned contentOffset
-  # to the bottom every frame with no contentOffset→yDisp sync, so finger-scroll of
-  # the scrollback was BROKEN — a library bug (SwiftTerm issue #486) fixed in v1.14.0
-  # (PR #587: contentOffset override + syncYDispFromContentOffset + terminal.userScrolling).
-  # No app-side workaround exists (proven by ~7 builds); the fix is this upgrade.
-  #
-  # VENDORED (was a remote `exactVersion: 1.15.0` pin): resizing correctly is an
-  # emulator-level change — reflow must carry the reading position, and a resize
-  # must not soft-reset the terminal — so `Vendor/SwiftTerm` is upstream
-  # migueldeicaza/SwiftTerm at dd2fb8ac5b861e7bf617c872895e338f38165648 (tag
-  # v1.15.0, byte-identical to the previous pin) plus the app's own fixes. Same
-  # module and product name, so target dependencies below are unchanged.
-  #
-  # METAL: v1.12.0+ bundles `Apple/Metal/Shaders.metal` UNCONDITIONALLY (the
-  # vendored Package.swift keeps upstream's `.process("Apple/Metal/Shaders.metal")`;
-  # there is no shader opt-out). Xcode 26 makes the Metal shader-compiler toolchain a
-  # separate download; both CI and the local buildbox run
-  # `xcodebuild -downloadComponent MetalToolchain` so `CompileMetalFile` succeeds. We
-  # still use CoreText at runtime — the shader is compiled but unused.
+    path: "."
   SwiftTerm:
     path: Vendor/SwiftTerm
-
 targets:
   Herdr:
     type: application
     platform: iOS
     sources:
-      - path: App
-      # The Live Activity model (#90), shared verbatim with the widget extension so
-      # both encode/decode the same ContentState. Kept out of HerdrKit (which must stay
-      # Linux-buildable) and out of App/ (widget can't see App/).
-      - path: Shared
-      # The Live Activity RENDERING, compiled into the app as well as the widget, so a
-      # UI receipt can screenshot it. Nothing presents these views in the shipping app:
-      # the only entry point is the DEBUG gallery (`ScreenshotMock.widgets`), and the
-      # `Widget` declaration itself lives in HerdrWidgetBundle.swift, which stays out
-      # of this target. Without this the layout is unverifiable by construction —
-      # XCUITest cannot see a real Live Activity, so every round so far was judged by
-      # arithmetic over a model of the material rather than by looking at pixels.
-      - path: HerdrWidgets/AgentLiveActivity.swift
+    - path: App/CoreApp.swift
+    - path: App/CoreRootView.swift
+    - path: App/UpstreamTerminalView.swift
+    - path: App/HostEditor.swift
+    - path: App/SavedHosts.swift
+    - path: App/DesignSystem.swift
+    - path: App/Fonts
+      buildPhase: resources
+    - path: App/Assets.xcassets
+      buildPhase: resources
     dependencies:
-      # Declared in step ONE rather than when a screen first needs it. Linking
-      # HerdrKit into an iOS app exercises the libssh2 system library, the module
-      # map and the platform floors — the exact surface that broke three ways in
-      # #18 and was invisible from Linux every time. Better to find that now,
-      # against ten lines of UI, than later against a thousand.
-      - package: HerdrKit
-        product: HerdrKit
-      # SwiftTerm rides on the APP target only (it is UIKit/AppKit) — it renders
-      # the live terminal in TerminalPaneContent. HerdrKit deliberately does NOT
-      # depend on it so the Linux build/test of the protocol layer stays intact.
-      - package: SwiftTerm
-        product: SwiftTerm
-      # QuickLook backs the Gram page's file preview (`.quickLookPreview`). Linked
-      # explicitly so the SwiftUI modifier resolves regardless of auto-linking.
-      - sdk: QuickLook.framework
-      # PhotosUI backs the Gram attachment picker's Photo/Video source (`PhotosPicker`
-      # / `.photosPicker`). Linked explicitly for the same reason as QuickLook above.
-      - sdk: PhotosUI.framework
-      # StoreKit 2 backs the Settings tip jar (`TipStore` / `Product`). Linked
-      # explicitly for the same reason as QuickLook/PhotosUI above.
-      - sdk: StoreKit.framework
-      # WebKit backs the Gram HTML/SVG viewer (`HtmlWebView` / `WKWebView`). Linked
-      # explicitly for the same reason as QuickLook/PhotosUI/StoreKit above.
-      - sdk: WebKit.framework
-      # AVFoundation + Speech back voice dictation (`VoiceInput` / `MicButton`): audio
-      # capture (AVAudioEngine) and on-device transcription (SFSpeechRecognizer). Linked
-      # explicitly for the same reason as the frameworks above.
-      - sdk: AVFoundation.framework
-      - sdk: Speech.framework
-      # GameController backs hardware-keyboard detection for the iPad key-drive mode
-      # (`GCKeyboard.coalesced` + the GCKeyboardDidConnect/Disconnect notifications in
-      # LiveTerminalView). Linked explicitly for the same reason as the frameworks above.
-      - sdk: GameController.framework
-      # ActivityKit backs the agent-session Live Activity (#90) — `LiveActivityController`
-      # starts/updates/ends it. Linked explicitly for the same reason as the others.
-      - sdk: ActivityKit.framework
-      # The widget extension that renders the Live Activity. Declared as a dependency so
-      # xcodegen embeds it in the app's PlugIns (ActivityKit needs the host app to carry
-      # the extension). INERT for the buildbox sim build's signing (never signed); the
-      # Distribution archive needs the widget's own App Store profile — see testflight.yml.
-      - target: HerdrWidgets
-    # Add the UI-test bundle to the auto-generated `Herdr` scheme's TEST action, so
-    # `xcodebuild test -scheme Herdr -only-testing:HerdrUITests` runs it. This does NOT
-    # touch the scheme's build/archive action, so the TestFlight lane (`-scheme Herdr`
-    # archive) is unaffected. `storeKitConfiguration` points RUN/TEST at the local
-    # `.storekit` file, so the tip jar resolves prices in Simulator without App Store
-    # Connect — the archive action is untouched, so shipped builds hit the real store.
+    - package: HerdrKit
+      product: HerdrKit
+    - package: SwiftTerm
+      product: SwiftTerm
     scheme:
       testTargets:
-        - HerdrFontTests
-        - HerdrUITests
-      storeKitConfiguration: App/Herdr.storekit
+      - HerdrUITests
     info:
       path: App/Info.plist
       properties:
-        # MUST be set explicitly. Without it xcodegen writes its own default of "1.0"
-        # into the generated plist, MARKETING_VERSION is never consulted, and the
-        # setting silently does nothing. That is not hypothetical: builds shipped as
-        # 1.0 while this file said 0.1, and it only surfaced when Apple closed the 1.0
-        # train after 1.0 was approved (altool 90186/90062) and every upload started
-        # failing. Both targets must carry the SAME value or the upload is rejected.
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
-        # The name is "herdrup" — all lowercase, everywhere: home-screen label, App
-        # Store / TestFlight, and the in-app title (ConnectView) + version footer.
-        # CFBundleName is set explicitly too (it otherwise resolves to the target
-        # name "Herdr" — the daemon's name, not the app's).
-        CFBundleDisplayName: herdrup
-        CFBundleName: herdrup
-        CFBundleURLTypes:
-          - CFBundleURLName: com.jerryfane.herdr
-            CFBundleURLSchemes:
-              - herdrup
-        # Names the asset-catalog icon set for the runtime. actool also injects
-        # this via ASSETCATALOG_COMPILER_APPICON_NAME, but this Info.plist is
-        # generated (GENERATE_INFOPLIST_FILE: NO), so we set it explicitly too.
+        CFBundleDisplayName: Herdr Core
+        CFBundleName: Herdr Core
         CFBundleIconName: AppIcon
-        # Live Activities (#90): opt the app in so ActivityKit may start the agent-session
-        # activity on the lock screen / Dynamic Island. Required or Activity.request throws.
-        NSSupportsLiveActivities: true
-        # Voice input (#89): the mic button by the Gram composer and terminal reply bar
-        # dictates on-device. Both strings are required or the app crashes the first time
-        # it requests the permission.
-        NSMicrophoneUsageDescription: herdrup uses the microphone only while you hold a dictation session, to turn your speech into text in the message field. Audio is transcribed on-device and never leaves your phone.
-        NSSpeechRecognitionUsageDescription: herdrup transcribes your dictation into text on-device, so you can talk instead of type. Your speech is not sent anywhere.
-        # QR pairing (#126): the camera reads the code `herdr pair` prints on the
-        # machine. REQUIRED — like the two strings above, the app crashes the first
-        # time it asks for the permission if this is missing, and the crash would land
-        # on the very first screen a new user reaches.
-        NSCameraUsageDescription: herdrup uses the camera only to scan the pairing code your computer displays, so it can connect without you typing anything. No photos or video are recorded.
-        # Export compliance: herdr uses ONLY standard, published encryption (AES/SSH
-        # via a standard library — no proprietary or custom cryptography), which
-        # QUALIFIES FOR THE STANDARD MASS-MARKET EXEMPTION (EAR Category 5 Part 2). So
-        # this is `false` — the "uses standard encryption that qualifies for an
-        # exemption" declaration used by essentially every SSH client on the App
-        # Store. Owner (the legal authority) approved this determination 2026-08-05,
-        # after the stricter `true` value was found to REQUIRE A FULL CCATS FILING to
-        # upload (App Store Connect altool error 90592: an empty ITSEncryptionExport
-        # ComplianceCode) — disproportionate for standard encryption of this kind.
-        # CONFIRMED FOR THE PUBLIC RELEASE: this comment used to say a public App
-        # Store release "should confirm the self-classification paperwork with a
-        # compliance specialist; for TestFlight this uploads cleanly" — written when
-        # the app only shipped to TestFlight, and stale from the moment 1.0.3 reached
-        # the App Store on 2026-09-03. The owner confirmed the self-classification for
-        # a public release (org directive 110552), closing that deferral. To be exact:
-        # that is the OWNER'S OWN determination as the responsible party. NO COMPLIANCE
-        # SPECIALIST HAS REVIEWED IT and nothing here is a specialist opinion. The
-        # value below is unchanged by that confirmation.
         ITSAppUsesNonExemptEncryption: false
-        # Bundled design fonts (App/Fonts/, added as resources by xcodegen). Geist is
-        # the APP voice, IBM Plex Mono the MACHINE voice — the two families the Claude
-        # Design spec (herdr mobile.dc.html) is set in. Nerd Fonts' monospaced symbols
-        # are the terminal's fallback for prompt/tool icons. Registered here so UIKit
-        # loads them; licenses are alongside the .ttf files.
         UIAppFonts:
-          - Geist-Regular.ttf
-          - Geist-Medium.ttf
-          - Geist-SemiBold.ttf
-          - Geist-Bold.ttf
-          - IBMPlexMono-Regular.ttf
-          - IBMPlexMono-Medium.ttf
-          - IBMPlexMono-SemiBold.ttf
-          - IBMPlexMono-Bold.ttf
-          - HerdrupSymbols-Regular.ttf
+        - Geist-Regular.ttf
+        - Geist-Medium.ttf
+        - Geist-SemiBold.ttf
+        - Geist-Bold.ttf
+        - IBMPlexMono-Regular.ttf
+        - IBMPlexMono-Medium.ttf
+        - IBMPlexMono-SemiBold.ttf
+        - IBMPlexMono-Bold.ttf
+        - HerdrupSymbols-Regular.ttf
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
-          - UIInterfaceOrientationPortrait
-        # iPhone stays portrait-only (above); iPad (universal now) rotates freely.
+        - UIInterfaceOrientationPortrait
         UISupportedInterfaceOrientations~ipad:
-          - UIInterfaceOrientationPortrait
-          - UIInterfaceOrientationPortraitUpsideDown
-          - UIInterfaceOrientationLandscapeLeft
-          - UIInterfaceOrientationLandscapeRight
-        # NOTE: no UIBackgroundModes here. Our push is an ALERT the user taps (agent transition) —
-        # the system delivers alert pushes with no background mode, and `remote-notification` only
-        # matters for silent `content-available` wakes (which also require a fetch handler we don't
-        # implement). Declaring it unused is an App Store review flag, so it is deliberately omitted.
+        - UIInterfaceOrientationPortrait
+        - UIInterfaceOrientationPortraitUpsideDown
+        - UIInterfaceOrientationLandscapeLeft
+        - UIInterfaceOrientationLandscapeRight
+        NSLocalNetworkUsageDescription: Connect to your Herder hosts over SSH on your
+          local network.
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jerryfane.herdr
-        MARKETING_VERSION: "1.0.9"
-        CURRENT_PROJECT_VERSION: "1"
-        SWIFT_VERSION: "5.9"
-        GENERATE_INFOPLIST_FILE: NO
-        TARGETED_DEVICE_FAMILY: "1,2"
-        # Run on Apple Silicon Macs as a "Designed for iPad" app (install on macOS).
-        # The unchanged iOS binary runs under the Mac's iOS runtime — no Catalyst
-        # recompile.
-        # Live Activities / Dynamic Island are iOS-only and simply no-op on Mac. The
-        # HerdrWidgets extension stays iOS-only (Live Activities are not on macOS).
-        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: YES
-        # APNs entitlement (App/Herdr.entitlements): aps-environment = $(APS_ENVIRONMENT), resolved
-        # per-config below (development for Debug, production for Release/Distribution). The App ID has
-        # the Push capability and the "Herdrup App Store" profile was re-minted WITH Push, so the device
-        # archive lanes (Release Mac lane, Distribution CI) sign cleanly. INERT for the iphonesimulator
-        # build (never code-signed), so the buildbox/CI sim build is unaffected. Pairs with the 2b/2c
-        # push stack (AppDelegate/PushCenter registration + the herdr APNs sender).
-        CODE_SIGN_ENTITLEMENTS: App/Herdr.entitlements
-        # The lamb app icon ("Herdrup — The Lamb", the approved icon kit). The
-        # asset catalog lives under App/ (already a source path), so xcodegen
-        # bundles it; this names the icon set inside it. Single 1024 artwork —
-        # the mark survives to 48px, so iOS downscales it for every slot.
+        PRODUCT_BUNDLE_IDENTIFIER: com.badarahmed.herdr.core
+        MARKETING_VERSION: 1.0.9
+        CURRENT_PROJECT_VERSION: '1'
+        SWIFT_VERSION: '5.9'
+        GENERATE_INFOPLIST_FILE: false
+        TARGETED_DEVICE_FAMILY: '2'
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: true
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        # Distribution signing for the TestFlight/App Store archive lane. Team
-        # FXQ5Z9HHY6 (Jerry Fanelli), automatic signing — the Mac archive runs with
-        # `-allowProvisioningUpdates` using the Mac's signed-in Xcode account, which
-        # creates/renews the Apple Distribution cert + App Store profile on demand.
-        # These are INERT for the buildbox's iphonesimulator build (the simulator
-        # is never code-signed), so the existing green sim build is unaffected;
-        # they take effect only for a device archive. See scripts/testflight.sh.
-        DEVELOPMENT_TEAM: FXQ5Z9HHY6
         CODE_SIGN_STYLE: Automatic
-      # The Distribution config (GitHub Actions CI archive) signs MANUALLY, scoped to
-      # THIS app target. It must NOT be passed on the xcodebuild command line: that
-      # applies the provisioning profile to EVERY target, including the SwiftPM
-      # dependency targets (swift-crypto / swift-nio, pulled via Citadel), which are
-      # libraries that "do not support provisioning profiles" — and the archive fails.
-      # Scoped here, only the app target carries the profile. It lives on Distribution,
-      # NOT Release, so the Mac lane's automatic Release signing (scripts/testflight.sh)
-      # is unaffected; Debug (the buildbox sim build) is never code-signed. The
-      # specifier matches the profile minted into the `testflight` GitHub environment.
-      configs:
-        # aps-environment resolves from APS_ENVIRONMENT per config: `development` for an on-device
-        # Debug build (which provisions against a development profile / sandbox APNs), `production` for
-        # the Release (Mac lane) and Distribution (CI) archives that ship to TestFlight/App Store.
-        Debug:
-          APS_ENVIRONMENT: development
-        Release:
-          APS_ENVIRONMENT: production
-        Distribution:
-          APS_ENVIRONMENT: production
-          CODE_SIGN_STYLE: Manual
-          PROVISIONING_PROFILE_SPECIFIER: "Herdrup App Store"
-          CODE_SIGN_IDENTITY: "Apple Distribution"
-
-  # Hosted UIKit test for the terminal font contract. Running inside Herdr is
-  # essential: UIAppFonts registration belongs to the app bundle, and the test
-  # must prove Core Text can resolve a Nerd Font glyph from that shipped bundle.
-  HerdrFontTests:
-    type: bundle.unit-test
-    platform: iOS
-    sources:
-      - path: HerdrFontTests
-    dependencies:
-      - target: Herdr
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jerryfane.herdr.fonttests
-        SWIFT_VERSION: "5.9"
-        GENERATE_INFOPLIST_FILE: YES
-        TARGETED_DEVICE_FAMILY: "1,2"
-        CODE_SIGNING_ALLOWED: NO
-
-  # UI-test bundle — the automated SCROLL RECEIPT. Launches the app in the
-  # HERDR_SCREENSHOT_MOCK=scroll pane (a real SwiftTerm view fed 200 lines), swipes it,
-  # and asserts the rendered content MOVED (proving the SwiftTerm 1.15.0 scroll fix on a
-  # simulator — the on-device gesture proof JARVIS rule 47874 requires). Simulator only,
-  # never signed, never archived. GENERATE_INFOPLIST_FILE builds the test bundle plist.
+        DEVELOPMENT_TEAM: FA2N3ZW6ZV
   HerdrUITests:
     type: bundle.ui-testing
     platform: iOS
     sources:
-      - path: HerdrUITests
+    - path: HerdrUITests/CoreUITests.swift
     dependencies:
-      - target: Herdr
+    - target: Herdr
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jerryfane.herdr.uitests
-        SWIFT_VERSION: "5.9"
-        GENERATE_INFOPLIST_FILE: YES
-        TARGETED_DEVICE_FAMILY: "1,2"
-        CODE_SIGNING_ALLOWED: NO
-
-  # Widget extension — the #90 Live Activity (agent-session status on the lock screen +
-  # Dynamic Island). A WidgetKit app-extension; xcodegen embeds it in the app's PlugIns.
-  # Shares the ActivityAttributes source with the app (both list `Shared`), and keeps its
-  # own copy of the status colours because DesignSystem is app-target only. The buildbox
-  # sim build is never signed (CODE_SIGNING_ALLOWED=NO on the command line), so the widget
-  # compiles+embeds there with no profile; the Distribution ARCHIVE needs the widget's own
-  # App Store profile ("Herdrup Widgets App Store"), minted for com.jerryfane.herdr.widgets
-  # — see testflight.yml (Option B: created in CI via the ASC API, or minted once).
-  HerdrWidgets:
-    type: app-extension
-    platform: iOS
-    sources:
-      - path: HerdrWidgets
-      - path: Shared
-      # ONLY THE FACES THE WIDGET REGISTERS. `App/Fonts` is shared with the app, and
-      # pulling the whole directory in put a second copy of SymbolsNerdFontMono
-      # (2.6 MB, more than twice every other bundled face combined) inside the appex,
-      # where nothing lists it in UIAppFonts and nothing can use it. The excludes below
-      # are the faces and licence texts the widget's own UIAppFonts does not name; keep
-      # them in step with that list.
-      - path: App/Fonts
-        buildPhase: resources
-        excludes:
-          - HerdrupSymbols-Regular.ttf
-          # Its licence goes with it: nothing in the appex carries a Nerd Fonts glyph.
-          - NerdFonts-LICENSE.txt
-          - Geist-Bold.ttf
-          - Geist-Medium.ttf
-          - IBMPlexMono-Bold.ttf
-          # Geist-OFL.txt and IBMPlexMono-OFL.txt STAY. The OFL requires its text to
-          # travel with the fonts, and this bundle does ship Geist and IBM Plex faces.
-    dependencies:
-      - sdk: WidgetKit.framework
-      - sdk: SwiftUI.framework
-      - sdk: ActivityKit.framework
-    info:
-      path: HerdrWidgets/Info.plist
-      properties:
-        CFBundleDisplayName: herdrup
-        # Must MATCH the app target's, or the App Store rejects the upload. Same
-        # reason as the app's: without this, xcodegen writes a default "1.0".
-        CFBundleShortVersionString: "$(MARKETING_VERSION)"
-        UIAppFonts:
-          - Geist-Regular.ttf
-          - Geist-SemiBold.ttf
-          - IBMPlexMono-Regular.ttf
-          - IBMPlexMono-Medium.ttf
-          - IBMPlexMono-SemiBold.ttf
-        NSExtension:
-          NSExtensionPointIdentifier: com.apple.widgetkit-extension
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jerryfane.herdr.widgets
-        MARKETING_VERSION: "1.0.9"
-        CURRENT_PROJECT_VERSION: "1"
-        SWIFT_VERSION: "5.9"
-        GENERATE_INFOPLIST_FILE: NO
-        TARGETED_DEVICE_FAMILY: "1,2"
-        # Team + automatic signing for the base (Mac lane / local). INERT for the sim
-        # build (never signed). The Distribution config overrides to manual with the
-        # widget's own App Store profile, mirroring the app target.
-        DEVELOPMENT_TEAM: FXQ5Z9HHY6
-        CODE_SIGN_STYLE: Automatic
-      configs:
-        Distribution:
-          CODE_SIGN_STYLE: Manual
-          PROVISIONING_PROFILE_SPECIFIER: "Herdrup Widgets App Store"
-          CODE_SIGN_IDENTITY: "Apple Distribution"
+        PRODUCT_BUNDLE_IDENTIFIER: com.badarahmed.herdr.core.uitests
+        SWIFT_VERSION: '5.9'
+        GENERATE_INFOPLIST_FILE: true
+        TARGETED_DEVICE_FAMILY: '2'
+        CODE_SIGNING_ALLOWED: false
